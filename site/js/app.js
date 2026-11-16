@@ -1608,6 +1608,51 @@ window.BB_AI = {
   duration: () => video.duration || 0,
 };
 
+// ---------- Live Caption Studio bridge (see js/live-studio.js) ----------
+// The studio module talks to the editor only through this object, so the editor's own
+// functions stay the single source of truth for loading, captioning, cutting and exporting.
+// Every method here only runs when the user calls it (after full module evaluation), so
+// referencing functions declared later in this file is safe — same pattern as BB_AI.
+window.BB_LIVE = {
+  cam: null, t0: 0, camFace: 'user', studio: null,
+  toast,
+  /** Load the finished take into the editor (decode + wave peaks start automatically). */
+  loadRecording: async file => { setMode('file'); return loadFile(file); },
+  /** Captions for the take: Gemini when the key is saved, else the on-device model. */
+  captionsGemini: async () => {
+    const hindi = spokenItems.find(it => it.lang.whisper === 'hindi') || spokenItems[0];
+    const hasKey = (() => { try { return !!(localStorage.getItem(GEMINI_LS_KEY) || '').trim(); } catch { return false; } })();
+    $('model').value = hasKey ? 'gemini' : qualityFor(hindi.lang);
+    $('startModel').value = $('model').value;
+    await runGeneration({ lang: hindi.lang, mode: 'hinglish', quality: $('model').value });
+  },
+  /** Cut the pauses (word gaps from the captions, else from the sound). Returns seconds saved. */
+  cutSilences: () => removeSilences(),
+  /** Export at the picked quality and hand back the file for sharing. */
+  exportStudio: async qualityId => {
+    const sizes = exportSizes();
+    const size = qualityId === '4k' ? sizes[0] : sizes.find(s => /1080p/.test(s.label)) || sizes[0];
+    await exportVideo({ kind: 'video', size });
+    return window.__vczLastExportBlob || null;
+  },
+  /** Front ↔ rear camera, keeping the take's clock for the Gemini correction. */
+  flipCamera: async qualityId => {
+    const B = window.BB_LIVE;
+    const facing = B.camFace === 'environment' ? 'user' : 'environment';
+    const constraints = B.studio && B.studio.liveConstraints
+      ? B.studio.liveConstraints(qualityId, facing)
+      : { video: { facingMode: facing }, audio: true };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (B.cam) B.cam.getTracks().forEach(t => t.stop());
+    B.camFace = facing;
+    cam = stream; B.cam = stream;
+    video.srcObject = stream;
+    await video.play();
+    if (B.studio) { B.studio.stopMicTap(); B.studio.startMicTap(stream, B.t0, (performance.now() - (B.t0 || performance.now())) / 1000); }
+    return stream;
+  },
+};
+
 // ---------- speech-to-text ----------
 // Fast mode switch: shown only when the site owner has set it up; the visitor's choice is remembered.
 const useCloud = () => !window.__vczNoCloud && $('cloudMode').checked;
@@ -2071,6 +2116,7 @@ function setMode(mode) {
     video.pause();
     $('drop').classList.add('hide');
     fitCanvas(1080, 1920);
+    if (window.BB_LIVE && window.BB_LIVE.studio && window.BB_LIVE.studio.probeAndFillQuality) window.BB_LIVE.studio.probeAndFillQuality();
     status(SR ? 'Start the camera and speak. Captions appear as you talk (Chrome, Edge or Safari). Their timing is approximate.'
       : 'Live captions need Chrome, Edge or Safari. Uploading a video works in every browser.');
   } else {
@@ -2098,11 +2144,12 @@ $('modeLive').onclick = () => setMode('live');
 
 $('camBtn').onclick = async () => {
   if (cam) return stopLive();
+  const studio0 = window.BB_LIVE && window.BB_LIVE.studio;
+  const constraints = studio0 && studio0.liveConstraints
+    ? studio0.liveConstraints(document.getElementById('studioQuality') ? document.getElementById('studioQuality').value : '1080p', window.BB_LIVE.camFace || 'user')
+    : { video: { width: { ideal: 1080 }, height: { ideal: 1920 }, facingMode: 'user' }, audio: { echoCancellation: true, noiseSuppression: true } };
   try {
-    cam = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1080 }, height: { ideal: 1920 }, facingMode: 'user' },
-      audio: { echoCancellation: true, noiseSuppression: true },
-    });
+    cam = await navigator.mediaDevices.getUserMedia(constraints);
   } catch { return toast('Camera or microphone permission was denied.'); }
   video.removeAttribute('src');
   video.srcObject = cam;
@@ -2110,6 +2157,8 @@ $('camBtn').onclick = async () => {
   await video.play();
   fitCanvas(1080, 1920); // Reels are vertical; the camera is centre-cropped to 9:16.
   liveT0 = performance.now(); liveFinal = []; liveInterim = []; interimTimes = [];
+  if (window.BB_LIVE) { window.BB_LIVE.cam = cam; window.BB_LIVE.t0 = liveT0; }
+  if (studio0 && studio0.startMicTap) studio0.startMicTap(cam, liveT0);
   S.segments = []; renderSegs();
   $('camBtn').textContent = 'Stop camera';
   $('recBtn').disabled = false;
@@ -2159,15 +2208,25 @@ function stopRecognition() {
 function stopLive() {
   wantLive = false;
   stopRecognition();
+  const studio1 = window.BB_LIVE && window.BB_LIVE.studio;
+  if (studio1) {
+    if (studio1.stopMicTap) studio1.stopMicTap();
+    if (studio1.stopCleanRecording) {
+      const p = studio1.stopCleanRecording();
+      if (p) p.then(() => { const f = document.getElementById('studioFinish'); if (f && studio1.lastRecording && studio1.lastRecording()) f.hidden = false; }).catch(() => {});
+    }
+  }
   if (recorder && recorder.state !== 'inactive') recorder.stop();
   if (cam) cam.getTracks().forEach(t => t.stop());
   cam = null;
+  if (window.BB_LIVE) window.BB_LIVE.cam = null;
   if (S.mode === 'live') {
     video.srcObject = null;
     if (liveFinal.length) { S.segments = C.segmentsFromWords(liveFinal, wordsPerCaption(), 32, true); renderSegs(); syncActions(); }
   }
   $('camBtn').textContent = 'Start camera';
   $('recBtn').disabled = true;
+  $('recBtn').textContent = '● Record'; $('liveTime').textContent = '';
 }
 
 // ---------- recording & export ----------
@@ -2187,6 +2246,18 @@ function download(blob, name) {
 }
 
 $('recBtn').onclick = () => {
+  const studio2 = window.BB_LIVE && window.BB_LIVE.studio;
+  if (studio2 && cam) {
+    // Live Caption Studio: record the clean camera + mic stream (no burned-in draft captions).
+    if (studio2.isRecording()) { studio2.stopCleanRecording(); $('recBtn').textContent = '● Record'; $('liveTime').textContent = ''; return; }
+    const qSel = document.getElementById('studioQuality');
+    try {
+      studio2.startCleanRecording(cam, qSel ? qSel.value : '1080p');
+    } catch (e) { return toast(e.message || 'Recording isn’t supported in this browser.'); }
+    $('recBtn').textContent = '■ Stop';
+    $('liveTime').innerHTML = '<span class="live-dot"></span> REC';
+    return;
+  }
   if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
   if (!window.MediaRecorder) return toast('Recording isn’t supported in this browser.');
   const mimeType = pickMime();
@@ -2544,6 +2615,7 @@ async function exportVideo({ kind = 'video', size, batch } = {}) {
       if (wc) {
         const name = `${S.file.name.replace(/\.[^.]+$/, '')}-${S.o.clip ? shortTag(range) : 'captioned'}.mp4`;
         download(wc, name);
+        window.__vczLastExportBlob = wc;
         status(`Exported “${name}” (${fmtBytes(wc.size)}, ${size.w}×${size.h}, original audio kept).`);
         window.__vczLastExport = 'webcodecs';
         return;
@@ -2625,6 +2697,7 @@ async function exportVideo({ kind = 'video', size, batch } = {}) {
     const suffix = S.o.clip ? shortTag(range) : kind === 'video' ? 'captioned' : kind === 'alpha' ? 'captions-transparent' : 'captions-greenscreen';
     const name = `${S.file.name.replace(/\.[^.]+$/, '')}-${suffix}.${ext}`;
     download(blob, name);
+    window.__vczLastExportBlob = blob;
     status(`Exported “${name}” (${fmtBytes(blob.size)}, ${size.w}×${size.h}).` +
       (kind === 'green' ? ' In CapCut or InShot: add it as an overlay, then use Chroma Key on the green.' : '') +
       (kind === 'video' && ext === 'webm' ? ' This browser can only record WebM. YouTube accepts it; for Instagram or iPhone, export from Chrome (126+) or Safari to get MP4.' : ''));
@@ -2801,7 +2874,10 @@ function drawFrame() {
     ctx.drawImage(graded(video, vw, vh), (W - vw * k) / 2, (H - vh * k) / 2, vw * k, vh * k);
     ctx.restore();
     const t = liveNow();
-    const words = liveFinal.slice(-40).concat(liveInterim).map(w => ({ ...w, text: transform(w.text) }));
+    let words = liveFinal.slice(-40).concat(liveInterim).map(w => ({ ...w, text: transform(w.text) }));
+    // Live Caption Studio: Gemini-corrected words replace the recognition's words for each
+    // finished 5 s window, so the overlay self-corrects to exact Roman Hinglish.
+    if (window.BB_LIVE && window.BB_LIVE.studio && window.BB_LIVE.studio.overlayWords) words = window.BB_LIVE.studio.overlayWords(words, t);
     drawCaption(ctx, W, H, findChunk(buildChunks(words, wordsPerCaption()), t), t, t0, opts);
   } else drawPlaceholder();
   return 0;
