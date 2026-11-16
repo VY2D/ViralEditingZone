@@ -1839,7 +1839,7 @@ function runWorker(audio, { lang, task, quality }, ui) {
         if (/Listening/.test(data.text)) { listenStart = Date.now(); listening = true; ui.onPct(3); }
         ui.onText(data.text);
       }
-      else if (data.type === 'model') { device = window.__vczPretendGpu && !cpuOnly() ? 'webgpu' : data.device; } // (pretend: tests only)
+      else if (data.type === 'model') { device = window.__vczPretendGpu && !cpuOnly() ? 'webgpu' : data.device; renderModelStore(); } // (pretend: tests only)
       else if (data.type === 'partial') { ui.onWords && ui.onWords(data.words); }
       else if (data.type === 'noWordTiming') { noWordMem.add(data.name); try { localStorage.setItem('vcz-noword', JSON.stringify([...new Set([...noWordList(), data.name])])); } catch { /* private mode */ } }
       else if (data.type === 'transcribe') {
@@ -3562,12 +3562,57 @@ const defaultQuality = lang => 'balanced';
 // Keep the downloaded speech model: ask the browser for persistent storage so the model
 // cache is not evicted under storage pressure (the cause of repeat 209 MB downloads).
 if (navigator.storage && navigator.storage.persist) { try { navigator.storage.persist(); } catch { /* best effort */ } }
+
+// ---------- speech-model storage indicator (user order 16 Nov 2026) ----------
+// Shows whether the speech model for the picked quality is already stored on this device,
+// and whether the browser granted persistent storage (so it is not evicted under pressure).
+// The model files live in the browser's Cache Storage under their Hugging Face URLs, so we
+// check every cache for a request whose URL contains the model id — a real check, not a guess.
+// Tapping the line asks the browser again for persistent storage (works best from a tap).
+const MODEL_IDS = { fast: 'whisper-tiny', balanced: 'whisper-base', best: 'whisper-small' };
+async function modelStored(quality) {
+  try {
+    if (!('caches' in window)) return null;
+    const id = MODEL_IDS[quality] || MODEL_IDS.balanced;
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const req of await cache.keys()) {
+        if (req.url.includes(id)) return true;
+      }
+    }
+    return false;
+  } catch { return null; }
+}
+async function renderModelStore() {
+  const els = document.querySelectorAll('[data-model-store]');
+  if (!els.length) return;
+  const q = ($('model') && $('model').value) || ($('startModel') && $('startModel').value) || 'balanced';
+  let stored = null, persisted = null;
+  try { stored = await modelStored(q); } catch { stored = null; }
+  try { persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null; } catch { persisted = null; }
+  const label = { fast: 'Fast', balanced: 'Balanced', best: 'Best for Hindi' }[q] || q;
+  const storeTxt = stored === true ? `✓ ${label} model saved on this device — no download next time`
+    : stored === false ? `○ ${label} model not saved yet — downloads once, then stays cached`
+    : `${label} model status unknown`;
+  const persistTxt = persisted === true ? ' · Storage: persistent ✓'
+    : persisted === false ? ' · Storage: not persistent — tap here to keep it stored'
+    : '';
+  els.forEach(el => { el.textContent = storeTxt + persistTxt; el.dataset.persisted = persisted ? '1' : '0'; });
+}
+document.addEventListener('click', async e => {
+  const el = e.target.closest && e.target.closest('[data-model-store]');
+  if (!el || el.dataset.persisted === '1') return;
+  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch { /* best effort */ }
+  renderModelStore();
+});
+renderModelStore();
 const pickedQuality = () => { const s = store.get(); return s && s.qualityPicked ? s.quality : null; };
 const qualityFor = lang => pickedQuality() || defaultQuality(lang);
 ['startModel', 'model'].forEach(id => $(id).addEventListener('change', e => {
   const v = e.target.value;
   $('startModel').value = v; $('model').value = v;
   store.set({ ...(store.get() || {}), quality: v, qualityPicked: true });
+  renderModelStore();
 }));
 const spokenItems = LANGUAGES.map((l, i) => ({ id: i, label: l.name, lang: l }))
   .filter(it => !it.lang.hinglish)
