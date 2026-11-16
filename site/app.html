@@ -533,6 +533,13 @@
         <button class="btn btn-sm" id="camBtn">Start camera</button>
         <button class="btn btn-sm btn-primary" id="recBtn" disabled>● Record</button>
         <span class="time" id="liveTime"></span>
+        <label class="field">Quality <select id="studioQuality"><option value="1080p" selected>1080p · Full HD</option><option value="4k">4K · Ultra HD</option></select></label>
+        <button class="btn btn-sm" id="studioFlip" type="button">Switch camera</button>
+      </div>
+      <div class="transport" id="studioFinish" hidden>
+        <span class="time" id="studioStatus"></span>
+        <button class="btn btn-sm btn-primary" id="studioFinishBtn">✂️ Cut silences &amp; make final video</button>
+        <button class="btn btn-sm" id="studioShareBtn" disabled>Share</button>
       </div>
     </section>
 
@@ -725,6 +732,7 @@
   <script type="module" src="js/capcut-shell.js"></script>
   <script type="module" src="js/ai-assist.js"></script>
   <script type="module" src="js/gemini-assist.js"></script>
+  <script type="module" src="js/live-studio.js"></script>
   <script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));</script>
   <!-- Instagram "DM here" wiring: single handle source = window.BRAND_INSTAGRAM (head).
        Pending state: buttons stay visible but disabled and point nowhere, so no visitor
