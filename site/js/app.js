@@ -162,7 +162,8 @@ $('lang').value = String(LANGUAGES.findIndex(l => l.hinglish));
 $('lang').onchange = () => {
   const l = LANGUAGES[$('lang').value];
   if (l.hinglish && !S.hinglish) { S.hinglish = true; $('hinglish').checked = true; renderSegs(); commit(); }
-  $('model').value = qualityFor(l); // Hindi / Hinglish → Best for Hindi on computers, unless picked by hand
+  $('model').value = qualityFor(l); // Gemini when a key is saved, else Balanced, unless picked by hand
+  renderModelStore(); syncGeminiRow();
   if (S.mode === 'live' && recog) { stopRecognition(); startRecognition(); }
 };
 
@@ -1624,6 +1625,7 @@ window.BB_LIVE = {
     const hasKey = (() => { try { return !!(localStorage.getItem(GEMINI_LS_KEY) || '').trim(); } catch { return false; } })();
     $('model').value = hasKey ? 'gemini' : qualityFor(hindi.lang);
     $('startModel').value = $('model').value;
+    renderModelStore(); syncGeminiRow();
     await runGeneration({ lang: hindi.lang, mode: 'hinglish', quality: $('model').value });
   },
   /** Cut the pauses (word gaps from the captions, else from the sound). Returns seconds saved. */
@@ -1668,10 +1670,22 @@ function syncGeminiRow() { $('geminiRow').hidden = $('model').value !== 'gemini'
 $('geminiSave').onclick = () => {
   try { localStorage.setItem(GEMINI_LS_KEY, $('geminiKey').value.trim()); } catch { /* private mode */ }
   $('geminiStat').textContent = geminiSaved() ? 'Key saved in this browser only ✓' : 'Key cleared.';
+  // A freshly saved key makes Gemini the default right away (no reload needed) —
+  // unless the user picked a quality by hand, which always wins.
+  if (geminiSaved() && !pickedQuality()) {
+    $('model').value = 'gemini'; $('startModel').value = 'gemini';
+    renderModelStore(); syncGeminiRow();
+  }
 };
 $('geminiClear').onclick = () => {
   try { localStorage.removeItem(GEMINI_LS_KEY); } catch { /* ignore */ }
   $('geminiKey').value = ''; $('geminiStat').textContent = 'Key removed.';
+  // No key left: a default (not hand-picked) Gemini selection falls back to Balanced,
+  // so the picker never claims Gemini while there is no key to run it with.
+  if (!pickedQuality() && $('model').value === 'gemini') {
+    $('model').value = qualityFor(LANGUAGES[$('lang').value]); $('startModel').value = $('model').value;
+    renderModelStore(); syncGeminiRow();
+  }
 };
 $('geminiTest').onclick = async () => {
   $('geminiSave').onclick();
@@ -3691,12 +3705,15 @@ const store = {
   get() { try { return JSON.parse(localStorage.getItem('vcz-langs') || 'null'); } catch { return null; } },
   set(v) { try { localStorage.setItem('vcz-langs', JSON.stringify(v)); } catch { /* private mode */ } },
 };
-// Default is Balanced (whisper-base) on every device: its download is roughly half of the
-// small model's ~209 MB, so the first caption run starts far sooner. The small model is still
-// one tap away in the quality picker ("Best") for users who want maximum Hindi accuracy.
+// Default quality (user order 16 Nov 2026 — Gemini is the default everywhere, so captions
+// are fixed by default and nobody has to pick Gemini per video): whenever the visitor's
+// own Gemini key is saved, the default is Gemini; with no key saved it stays Balanced
+// (whisper-base) exactly as before — its download is roughly half of the small model's
+// ~209 MB, so the first caption run starts far sooner. The small model is still one tap
+// away in the quality picker ("Best") for users who want maximum Hindi accuracy.
 // A quality the user picks by hand is remembered and always wins over this default.
 const IS_PHONE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent));
-const defaultQuality = lang => 'balanced';
+const defaultQuality = lang => geminiSaved() ? 'gemini' : 'balanced';
 // Keep the downloaded speech model: ask the browser for persistent storage so the model
 // cache is not evicted under storage pressure (the cause of repeat 209 MB downloads).
 if (navigator.storage && navigator.storage.persist) { try { navigator.storage.persist(); } catch { /* best effort */ } }
@@ -3777,8 +3794,8 @@ const captionCombo = combo($('captionCombo'), 'Select a language', 'Search capti
 const spokenCombo = combo($('spokenCombo'), 'Select a language', 'Search spoken language…', it => {
   start.spoken = it;
   const l = it && it.lang;
-  // Hindi / Hinglish → "Best for Hindi" on computers by default (see defaultQuality); a hand-picked quality wins.
-  if (l) $('startModel').value = qualityFor(l);
+  // Gemini when a key is saved, else Balanced (see defaultQuality); a hand-picked quality wins.
+  if (l) { $('startModel').value = qualityFor(l); $('model').value = $('startModel').value; renderModelStore(); syncGeminiRow(); }
   const own = l ? l.name.split(' — ')[0].replace(/ \(.*\)/, '') : '';
   const opts = !l ? [] : l.auto ? AUTO_CAPTION_OPTS : l.whisper === 'hindi'
     ? [{ id: 'native', label: 'Hindi' }, { id: 'hinglish', label: 'Hinglish (Roman Hindi)' }, { id: 'english', label: 'English' }]
@@ -3814,6 +3831,12 @@ spokenCombo.setItems(spokenItems);
   captionCombo.set('hinglish');
   start.caption = captionCombo.get();
   $('startModel').value = qualityFor(hindiSpoken.lang);
+  // Keep the editor select, the model-store line and the Gemini key row in sync with the
+  // default — they were painted before this block ran, so without this the first screen
+  // would still show Balanced while captions run on Gemini.
+  $('model').value = $('startModel').value;
+  renderModelStore();
+  syncGeminiRow();
 }
 function syncStart() {
   const go = $('startGo');
@@ -3828,6 +3851,8 @@ function beginFromStart() {
   store.set({ spoken: start.spoken.lang.name, caption: start.caption.id, quality: $('startModel').value, qualityPicked: !!prev.qualityPicked });
   if (start.spoken.id >= 0) $('lang').value = start.spoken.id; // Auto (-1): applyTranscript sets the heard language
   $('model').value = $('startModel').value;
+  renderModelStore();
+  syncGeminiRow();
   $('translate').checked = start.caption.id === 'english';
   openEditor();
   runGeneration({ lang: start.spoken.lang, mode: start.caption.id, quality: $('startModel').value });
@@ -3847,6 +3872,8 @@ function autoCaption() {
   // Any other language is one pick away in the language box.
   const hindi = spokenItems.find(it => it.lang.whisper === 'hindi') || spokenItems[0];
   $('model').value = qualityFor(hindi.lang);
+  renderModelStore();
+  syncGeminiRow();
   runGeneration({ lang: hindi.lang, mode: 'hinglish', quality: $('model').value });
 }
 
