@@ -1204,7 +1204,8 @@ function applyAiPlan(plan) {
   }
   if (plan.title || plan.description) $('clipNote').textContent = `AI YouTube title: ${plan.title || '-'}\n${plan.description || ''}`;
   commit(); renderTextUI(); timeline.render();
-  toast(done.length ? `AI edit: ${done.join(' · ')}. Everything stays editable; Ctrl+Z undoes.` : 'Claude found nothing worth cutting. Your video is already tight.', 9000);
+  toast(done.length ? `AI edit: ${done.join(' · ')}. Everything stays editable; Ctrl+Z undoes.` : 'AI found nothing worth cutting. Your video is already tight.', 9000);
+  return { done };
 }
 function seekTo(t) { if (S.mode === 'file' && video.src) video.currentTime = Math.max(0, t + 0.01); }
 
@@ -1598,6 +1599,13 @@ window.BB_AI = {
     renderTextUI(); commit();
     return true;
   },
+  /** Apply a Gemini edit plan {cuts, hook, highlights, shorts, title, description} — the same
+      shape the (owner-gated) Claude edit returns. One undo step; returns what was applied. */
+  applyAiPlan(plan) { return applyAiPlan(plan); },
+  /** Local rule-based auto edit (pauses + fillers) — the fallback when Gemini is busy. */
+  autoEdit() { autoEdit(); },
+  /** Video length in seconds, for clamping AI-planned times. */
+  duration: () => video.duration || 0,
 };
 
 // ---------- speech-to-text ----------
