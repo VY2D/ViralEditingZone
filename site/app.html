@@ -220,6 +220,7 @@
           <option value="fast">Fast · ~40 MB one-time download</option>
           <option value="balanced" selected>Balanced · ~80 MB (recommended)</option>
           <option value="best">Best for Hindi · 250–400 MB, slower, computers only</option>
+          <option value="gemini">Gemini · best subtitles, needs API key</option>
         </select>
         <p class="start-note" data-model-store role="status">Checking if the speech model is saved on this device…</p>
       </details>
@@ -354,10 +355,22 @@
                 <option value="fast">Fast · ~40 MB</option>
                 <option value="balanced" selected>Balanced · ~80 MB</option>
                 <option value="best">Best for Hindi · 250–400 MB</option>
+                <option value="gemini">Gemini · best subtitles</option>
               </select>
               <p class="hint" data-model-store role="status">Checking if the speech model is saved on this device…</p>
             </div>
             <label class="check field" id="cloudRow" hidden><input type="checkbox" id="cloudMode" checked> ⚡ Fast mode (sends the audio, never the video, to our speech server)</label>
+            <div class="field" id="geminiRow" hidden>
+              <label for="geminiKey">Gemini API key (free — Google AI Studio)</label>
+              <input type="password" id="geminiKey" autocomplete="off" placeholder="AIza…">
+              <p class="hint">Your own key, stored only in this browser. Audio clips (never the video) go to Google's Gemini API. On Google's free tier your data may be used to improve its products. Get a free key at <a href="https://aistudio.google.com/" target="_blank" rel="noopener">Google AI Studio</a>.</p>
+              <div class="row">
+                <button class="btn btn-sm" id="geminiSave" type="button">Save key</button>
+                <button class="btn btn-sm" id="geminiTest" type="button">Test connection</button>
+                <button class="btn btn-sm" id="geminiClear" type="button">Remove key</button>
+                <span class="hint" id="geminiStat" role="status"></span>
+              </div>
+            </div>
             <div class="row">
               <button class="btn btn-primary" id="genBtn" disabled>Make captions again</button>
               <button class="btn" id="genCancel" hidden>Cancel</button>
