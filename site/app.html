@@ -221,6 +221,7 @@
           <option value="balanced" selected>Balanced · ~80 MB (recommended)</option>
           <option value="best">Best for Hindi · 250–400 MB, slower, computers only</option>
         </select>
+        <p class="start-note" data-model-store role="status">Checking if the speech model is saved on this device…</p>
       </details>
       <button class="start-go" id="startGo" disabled><i id="startBar"></i><span id="startGoText">Upload Video First</span></button>
       <button class="start-cancel" id="startCancel" type="button" hidden>Cancel</button>
@@ -354,6 +355,7 @@
                 <option value="balanced" selected>Balanced · ~80 MB</option>
                 <option value="best">Best for Hindi · 250–400 MB</option>
               </select>
+              <p class="hint" data-model-store role="status">Checking if the speech model is saved on this device…</p>
             </div>
             <label class="check field" id="cloudRow" hidden><input type="checkbox" id="cloudMode" checked> ⚡ Fast mode (sends the audio, never the video, to our speech server)</label>
             <div class="row">
