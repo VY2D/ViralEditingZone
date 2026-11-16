@@ -155,6 +155,9 @@ LANGUAGES.forEach((l, i) => {
   o.value = i; o.textContent = l.name;
   $('lang').appendChild(o);
 });
+// Hinglish is the default caption language (user order 16 Nov 2026): the editor opens on
+// Hinglish (Hindi → Roman) so Generate gives Roman Hindi lines unless the user picks another language.
+$('lang').value = String(LANGUAGES.findIndex(l => l.hinglish));
 $('lang').onchange = () => {
   const l = LANGUAGES[$('lang').value];
   if (l.hinglish && !S.hinglish) { S.hinglish = true; $('hinglish').checked = true; renderSegs(); commit(); }
@@ -3600,19 +3603,27 @@ const spokenCombo = combo($('spokenCombo'), 'Select a language', 'Search spoken 
 });
 spokenCombo.setItems(spokenItems);
 {
-  // Saved language choices are NOT restored: Auto-detect is always the starting default
-  // (user rule — Hindi speech -> Hinglish captions first priority, English -> English).
+  // Saved language choices are NOT restored: Hinglish is always the starting default
+  // (user rule 16 Nov 2026 — Hindi speech -> Hinglish captions; automatic English off).
   // A language picked by hand in the picker applies to that run only.
 }
 
 {
-  // Auto-detect is the default on every visit — no language picking needed.
-  spokenCombo.set(-1);
-  start.spoken = spokenItems[0];
-  captionCombo.setItems(AUTO_CAPTION_OPTS);
-  captionCombo.set('auto');
+  // Hinglish is the default on every visit (user order 16 Nov 2026): spoken Hindi, captions in
+  // Roman Hinglish — the speech model is told the language is Hindi, so it stops auto-detecting
+  // Hinglish speech as English. Auto-detect and every other language stay selectable in the
+  // pickers; a language picked by hand applies to that run only.
+  const hindiSpoken = spokenItems.find(it => it.lang.whisper === 'hindi') || spokenItems[0];
+  spokenCombo.set(hindiSpoken.id);
+  start.spoken = hindiSpoken;
+  captionCombo.setItems([
+    { id: 'native', label: 'Hindi' },
+    { id: 'hinglish', label: 'Hinglish (Roman Hindi)' },
+    { id: 'english', label: 'English' },
+  ]);
+  captionCombo.set('hinglish');
   start.caption = captionCombo.get();
-  $('startModel').value = qualityFor(AUTO_LANG);
+  $('startModel').value = qualityFor(hindiSpoken.lang);
 }
 function syncStart() {
   const go = $('startGo');
@@ -3639,14 +3650,14 @@ function startCaptions() {
   const mode = lang.hinglish || S.hinglish ? 'hinglish' : $('translate').checked ? 'english' : 'native';
   runGeneration({ lang, mode, quality: $('model').value });
 }
-/** A video was dropped into the editor: start captions straight away with the languages used last time. */
+/** A video was dropped into the editor: start captions straight away with the default languages. */
 function autoCaption() {
   if (S.image) return;
-  // Always Auto-detect (same rule as the start screen): Hindi -> Hinglish, English -> English,
-  // anything else as spoken. The editor's language box is set to the heard language afterwards.
-  const auto = spokenItems[0];
-  $('model').value = qualityFor(auto.lang);
-  runGeneration({ lang: auto.lang, mode: 'auto', quality: $('model').value });
+  // Same default as the start screen (user order 16 Nov 2026): Hindi spoken, Hinglish captions.
+  // Any other language is one pick away in the language box.
+  const hindi = spokenItems.find(it => it.lang.whisper === 'hindi') || spokenItems[0];
+  $('model').value = qualityFor(hindi.lang);
+  runGeneration({ lang: hindi.lang, mode: 'hinglish', quality: $('model').value });
 }
 
 async function startFile(file) {
