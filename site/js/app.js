@@ -23,6 +23,7 @@ import { seriesOrder, partOf, partLabel, seriesCaptions, seriesLabel, seriesWord
 import { SIZES, OVERLAYS, THUMBS, photoRect, drawOverlay } from './thumbs.js';
 import { newId, listProjects, getProject, getProjectFile, putProject, putProjectFile, patchProject, deleteProject } from './projects.js';
 import { cloudAvailable, cloudTranscribe } from './cloud-asr.js';
+import { geminiTranscribe, geminiTestKey, GEMINI_LS_KEY } from './gemini-asr.js';
 import './vendor/fix-webm-duration.js'; // sets window.ysFixWebmDuration (MIT)
 
 const $ = id => document.getElementById(id);
@@ -1605,6 +1606,29 @@ const useCloud = () => !window.__vczNoCloud && $('cloudMode').checked;
 try { if (localStorage.getItem('vcz-cloud') === 'off') $('cloudMode').checked = false; } catch { /* private mode */ }
 $('cloudMode').onchange = e => { try { localStorage.setItem('vcz-cloud', e.target.checked ? 'on' : 'off'); } catch { /* ignore */ } };
 cloudAvailable().then(on => { $('cloudRow').hidden = !on; });
+
+// Gemini (BYOK): the visitor's own key, localStorage only — same pattern as js/ai-assist.js.
+const geminiKey = () => { try { return (localStorage.getItem(GEMINI_LS_KEY) || '').trim(); } catch { return ''; } };
+const geminiSaved = () => !!geminiKey();
+const useGemini = () => $('model').value === 'gemini' && geminiSaved();
+function syncGeminiRow() { $('geminiRow').hidden = $('model').value !== 'gemini'; }
+$('geminiSave').onclick = () => {
+  try { localStorage.setItem(GEMINI_LS_KEY, $('geminiKey').value.trim()); } catch { /* private mode */ }
+  $('geminiStat').textContent = geminiSaved() ? 'Key saved in this browser only ✓' : 'Key cleared.';
+};
+$('geminiClear').onclick = () => {
+  try { localStorage.removeItem(GEMINI_LS_KEY); } catch { /* ignore */ }
+  $('geminiKey').value = ''; $('geminiStat').textContent = 'Key removed.';
+};
+$('geminiTest').onclick = async () => {
+  $('geminiSave').onclick();
+  if (!geminiSaved()) { $('geminiStat').textContent = 'Paste a key first.'; return; }
+  $('geminiStat').textContent = 'Testing…';
+  try { await geminiTestKey(geminiKey()); $('geminiStat').textContent = 'Connected ✓ — Gemini accepted the key.'; }
+  catch (e) { $('geminiStat').textContent = e.message; }
+};
+try { $('geminiKey').value = geminiKey(); } catch { /* private mode */ }
+syncGeminiRow();
 let worker = null, busyGen = null;
 function getWorker() {
   if (!worker) {
@@ -1615,6 +1639,7 @@ function getWorker() {
 }
 /** Download and load the speech model in the background while the user picks languages. */
 async function preloadModel(quality) {
+  if (quality === 'gemini') return; // Gemini needs no download
   if (useCloud() && await cloudAvailable()) return; // Fast mode needs no download
   if (!store.get()) return; // languages not chosen yet: the model to load isn't known, don't download one for nothing
   try { getWorker().postMessage({ type: 'preload', quality, noWordTiming: noWordList(), cpuOnly: cpuOnly() }); } catch { /* not critical */ }
@@ -1761,6 +1786,35 @@ async function transcribe({ lang, task, quality }, ui) {
   let peak = 0;
   for (let i = 0; i < audio.length; i += 50) peak = Math.max(peak, Math.abs(audio[i]));
   if (!audio.length || peak < 0.002) throw new Error('This video seems to have no sound, so there is nothing to transcribe.');
+  // Gemini (only if the user picked it and saved their own key). Any failure falls back to
+  // on-device captions, exactly like Fast mode.
+  if ($('model').value === 'gemini') {
+    if (!geminiSaved()) {
+      ui.onText('Gemini is picked but no API key is saved — add it under More options → Gemini settings, or pick another quality. Captions are made on your device for now…');
+    } else {
+      const ctrl = new AbortController();
+      let cancelled = false;
+      try {
+        ui.onText('✨ Gemini: listening…'); ui.onPct(5);
+        const job = geminiTranscribe(audio, {
+          apiKey: geminiKey(), lang: lang.whisper ? lang.bcp.split('-')[0] : null, task, signal: ctrl.signal, onWords: ui.onWords,
+          onProgress: (d, t) => { ui.onText(`✨ Gemini… ${d} of ${t}`); ui.onPct(d / t * 100); },
+        });
+        const res = await new Promise((resolve, reject) => {
+          busyGen = { reject, abort: () => { cancelled = true; ctrl.abort(); reject(new Error('cancelled')); } };
+          job.then(resolve, reject);
+        });
+        busyGen = null;
+        return { ...res, gemini: true };
+      } catch (err) {
+        busyGen = null;
+        if (cancelled || err.message === 'cancelled') throw new Error('cancelled');
+        console.warn('Gemini failed, using on-device captions', err);
+        ui.onReset && ui.onReset();
+        ui.onText(err.message === 'busy' ? 'Gemini is busy right now, so captions are made on your device…' : 'Gemini didn’t answer, so captions are made on your device…');
+      }
+    }
+  }
   // Fast mode (only if the site owner set it up and the visitor didn't switch it off).
   if (useCloud() && await cloudAvailable()) {
     const ctrl = new AbortController();
@@ -1883,7 +1937,7 @@ function describeResult(res) {
   const lastEnd = S.segments.length ? S.segments[S.segments.length - 1].end : 0;
   const dur = isFinite(video.duration) ? video.duration : 0;
   const cover = S.segments.length ? ` Captions cover the whole video: 0:00 to ${fmt(lastEnd)}${dur ? ` of ${fmt(dur)}` : ''}.` : '';
-  return `Done: ${n} words in ${S.segments.length} captions${res.cloud ? ' (⚡ Fast mode)' : ''}.${cover}` +
+  return `Done: ${n} words in ${S.segments.length} captions${res.cloud ? ' (⚡ Fast mode)' : res.gemini ? ' (✨ Gemini)' : ''}.${cover}` +
     (res.level === 'segment' ? ` Word-by-word timing wasn’t available on this device${res.wordError ? ` (${res.wordError})` : ''}, so it’s estimated from the voice (marked “est.”).` : ' Word timing comes from the speech model.') +
     ' Check the text, pick a template, then export.';
 }
@@ -3587,6 +3641,12 @@ async function renderModelStore() {
   const els = document.querySelectorAll('[data-model-store]');
   if (!els.length) return;
   const q = ($('model') && $('model').value) || ($('startModel') && $('startModel').value) || 'balanced';
+  if (q === 'gemini') {
+    els.forEach(el => { el.textContent = geminiSaved()
+      ? '✨ Gemini — no model download; captions come from your API key'
+      : '✨ Gemini — no model download; add your API key under More options'; el.dataset.persisted = '1'; });
+    return;
+  }
   let stored = null, persisted = null;
   try { stored = await modelStored(q); } catch { stored = null; }
   try { persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null; } catch { persisted = null; }
@@ -3613,6 +3673,7 @@ const qualityFor = lang => pickedQuality() || defaultQuality(lang);
   $('startModel').value = v; $('model').value = v;
   store.set({ ...(store.get() || {}), quality: v, qualityPicked: true });
   renderModelStore();
+  syncGeminiRow();
 }));
 const spokenItems = LANGUAGES.map((l, i) => ({ id: i, label: l.name, lang: l }))
   .filter(it => !it.lang.hinglish)
